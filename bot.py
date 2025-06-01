@@ -4,6 +4,9 @@ from telegram.error import BadRequest, TimedOut, NetworkError
 import os
 from datetime import datetime
 import logging
+import asyncio
+from flask import Flask, request
+import threading
 
 # Настройка логирования
 logging.basicConfig(
@@ -15,6 +18,31 @@ logger = logging.getLogger(__name__)
 # Получаем токен из переменной окружения
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
+PORT = int(os.getenv("PORT", 5000))
+
+# Проверяем переменные окружения
+if not TOKEN:
+    logger.error("No BOT_TOKEN provided")
+    raise ValueError("No BOT_TOKEN provided")
+
+if not ADMIN_ID:
+    logger.error("No ADMIN_ID provided")
+    raise ValueError("No ADMIN_ID provided")
+
+# Flask приложение для health check
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is running!", 200
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+def run_flask():
+    """Запускает Flask сервер в отдельном потоке"""
+    app.run(host='0.0.0.0', port=PORT)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Отправляет приветственное сообщение и кнопку для отправки вопроса"""
@@ -36,6 +64,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 Нажмите кнопку "Задать вопрос" ниже 👇"""
 
         await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+        logger.info(f"Start command from user {update.effective_user.id}")
     except Exception as e:
         logger.error(f"Error in start handler: {e}")
         await update.message.reply_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
@@ -51,6 +80,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Постарайтесь сформулировать его максимально конкретно."
         )
         context.user_data['waiting_for_question'] = True
+        logger.info(f"Question request from user {update.effective_user.id}")
         
     except Exception as e:
         logger.error(f"Error in button handler: {e}")
@@ -77,12 +107,13 @@ async def handle_question(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             )
             
             await update.message.reply_text(
-                "✅ Спасибо за ваш вопрос! Он передан психологу.\n\n"
+                "✅ Спасибо за ваш вопрос! Он передан специалисту.\n\n"
                 "Наиболее интересные вопросы будут разобраны в постах канала.\n"
                 "Для нового вопроса используйте команду /start"
             )
             
             context.user_data['waiting_for_question'] = False
+            logger.info(f"Question received from user {user.id}")
             
     except Exception as e:
         logger.error(f"Error in handle_question: {e}")
@@ -107,7 +138,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     await update.message.reply_text(help_text)
 
-def main() -> None:
+async def run_bot():
     """Запускает бота"""
     try:
         application = Application.builder().token(TOKEN).build()
@@ -117,12 +148,32 @@ def main() -> None:
         application.add_handler(CallbackQueryHandler(button))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_question))
 
-        logger.info("Bot started")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("Bot starting...")
+        await application.initialize()
+        await application.start()
+        
+        # Запускаем polling
+        await application.updater.start_polling()
+        logger.info("Bot started successfully!")
+        
+        # Держим бота активным
+        while True:
+            await asyncio.sleep(1)
         
     except Exception as e:
-        logger.error(f"Error in main: {e}")
+        logger.error(f"Error in bot: {e}")
         raise e
+
+def main():
+    """Главная функция"""
+    # Запускаем Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    logger.info(f"Flask server started on port {PORT}")
+    
+    # Запускаем бота
+    asyncio.run(run_bot())
 
 if __name__ == '__main__':
     main()
